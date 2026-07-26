@@ -25,8 +25,10 @@ public class AwsHangInstrumentation {
   let hangPredetectionThreshold: CFAbsoluteTime
   var _hangStart: CFAbsoluteTime?
   var _rawStackTrace: Data?
+  var _reportInFlight = false
   let syncQueue = DispatchQueue(label: "\(AwsInstrumentationScopes.HANG).sync")
   let watchdogQueue = DispatchQueue(label: AwsInstrumentationScopes.HANG, qos: .userInitiated)
+  let reportingQueue = DispatchQueue(label: "\(AwsInstrumentationScopes.HANG).report", qos: .utility)
 
   var hangStart: CFAbsoluteTime? {
     get { syncQueue.sync { _hangStart } }
@@ -36,6 +38,11 @@ public class AwsHangInstrumentation {
   var rawStackTrace: Data? {
     get { syncQueue.sync { _rawStackTrace } }
     set { syncQueue.sync { _rawStackTrace = newValue } }
+  }
+
+  var reportInFlight: Bool {
+    get { syncQueue.sync { _reportInFlight } }
+    set { syncQueue.sync { _reportInFlight = newValue } }
   }
 
   let stackTraceCollector: LiveStackTraceReporter
@@ -135,14 +142,25 @@ public class AwsHangInstrumentation {
   }
 
   func reportHang(startTime: CFAbsoluteTime, endTime: CFAbsoluteTime) {
+    // If a report is still being formatted, do not start another one: a slow
+    // report must never be able to re-trip the detector.
+    guard !reportInFlight else {
+      AwsInternalLogger.debug("Hang report already in flight; skipping")
+      return
+    }
     if let stackTrace = rawStackTrace {
-      DispatchQueue.main.async {
+      reportInFlight = true
+      // Formatting runs off the main thread: PLCrashReport parsing plus text
+      // formatting can take over a second on device, which exceeds
+      // hangThreshold and would itself be detected as a fresh hang if run on
+      // the main queue.
+      reportingQueue.async {
+        defer { self.reportInFlight = false }
         let span = self.tracer.spanBuilder(spanName: AwsHangSemConv.name)
           .setStartTime(time: Date(timeIntervalSinceReferenceDate: startTime))
           .setAttribute(key: AwsHangSemConv.type, value: "hang")
           .startSpan()
 
-        // Offload formatting work in case thread is still experiencing jitter
         let liveStackTrace = self.stackTraceCollector.formatStackTrace(rawStackTrace: stackTrace)
         span.setAttribute(key: AwsHangSemConv.message, value: liveStackTrace.message)
         span.setAttribute(key: AwsHangSemConv.stacktrace, value: liveStackTrace.stacktrace)
