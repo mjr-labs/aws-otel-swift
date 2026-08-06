@@ -1,0 +1,13 @@
+# Break-glass mirror caller (EST-38) — see workspace-control/RESILIENCE_PLAN.md.
+name: Mirror
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    uses: mjr-labs/.github/.github/workflows/mirror-to-bitbucket.yml@main
+    secrets: inherit
