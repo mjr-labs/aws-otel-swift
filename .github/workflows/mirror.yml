@@ -1,13 +1,95 @@
-# Break-glass mirror caller (EST-38) — see workspace-control/RESILIENCE_PLAN.md.
+# Break-glass mirror to Bitbucket (EST-38) — INLINED copy of
+# mjr-labs/.github mirror-to-bitbucket.yml: this repo is PUBLIC (fork of the
+# public upstream), and public repos cannot call reusable workflows in a
+# private repo. Keep in sync with the canonical copy on any change.
+
 name: Mirror
+
 on:
   push:
   workflow_dispatch:
-
 permissions:
   contents: read
 
+env:
+  BB_WORKSPACE: mjr-labs-mirror
+  ATLASSIAN_EMAIL: mjroberts55@gmail.com
+
 jobs:
   mirror:
-    uses: mjr-labs/.github/.github/workflows/mirror-to-bitbucket.yml@main
-    secrets: inherit
+    runs-on: ubuntu-latest
+    # Serialise per repo: a rapid second push queues rather than racing the
+    # first (each run pushes the full current state anyway).
+    concurrency:
+      group: mirror-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Resolve mirror slug
+        run: |
+          SLUG="${GITHUB_REPOSITORY#*/}"
+          echo "BB_SLUG=$SLUG" >> "$GITHUB_ENV"
+
+      - name: Ensure the Bitbucket repo exists (private)
+        env:
+          BITBUCKET_MIRROR_TOKEN: ${{ secrets.BITBUCKET_MIRROR_TOKEN }}
+        run: |
+          set -eu
+          API="https://api.bitbucket.org/2.0/repositories/${BB_WORKSPACE}/${BB_SLUG}"
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+            -u "${ATLASSIAN_EMAIL}:${BITBUCKET_MIRROR_TOKEN}" "$API")
+          if [ "$STATUS" = "404" ]; then
+            # Repo creation must land in a project. Try to discover one (the
+            # token may lack project read scope — log, don't trust, the reply),
+            # else create with no key and let Bitbucket use the default project.
+            PSTAT=$(curl -s -o /tmp/projects.json -w '%{http_code}' \
+              -u "${ATLASSIAN_EMAIL}:${BITBUCKET_MIRROR_TOKEN}" \
+              "https://api.bitbucket.org/2.0/workspaces/${BB_WORKSPACE}/projects")
+            PROJECT=$(jq -r '.values[0].key // empty' /tmp/projects.json 2>/dev/null || true)
+            if [ -n "$PROJECT" ]; then
+              BODY="{\"scm\": \"git\", \"is_private\": true, \"project\": {\"key\": \"${PROJECT}\"}}"
+              echo "Creating ${BB_WORKSPACE}/${BB_SLUG} in project ${PROJECT}"
+            else
+              echo "Projects list HTTP ${PSTAT}: $(cat /tmp/projects.json)"
+              BODY='{"scm": "git", "is_private": true}'
+              echo "Creating ${BB_WORKSPACE}/${BB_SLUG} in the default project"
+            fi
+            CREATE=$(curl -s -o /tmp/create.json -w '%{http_code}' -X POST \
+              -u "${ATLASSIAN_EMAIL}:${BITBUCKET_MIRROR_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "$BODY" "$API")
+            case "$CREATE" in
+              200|201) ;;
+              *) echo "Repo creation failed (HTTP $CREATE):"; cat /tmp/create.json; exit 1 ;;
+            esac
+            # is_private is asserted, not assumed: a public mirror of private
+            # code would be a leak, so fail loudly if Bitbucket ignored it.
+            grep -q '"is_private": *true' /tmp/create.json || {
+              echo "Created repo is NOT private — deleting nothing, failing loudly"; exit 1; }
+          elif [ "$STATUS" != "200" ]; then
+            echo "Unexpected HTTP $STATUS checking for ${BB_SLUG}"; exit 1
+          fi
+
+      - name: Bare-clone source
+        run: |
+          git clone --bare --quiet \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" repo.git
+
+      - name: Push all branches and tags (non-force)
+        env:
+          BITBUCKET_MIRROR_TOKEN: ${{ secrets.BITBUCKET_MIRROR_TOKEN }}
+        run: |
+          set -eu
+          cd repo.git
+          DEST="https://x-bitbucket-api-token-auth:${BITBUCKET_MIRROR_TOKEN}@bitbucket.org/${BB_WORKSPACE}/${BB_SLUG}.git"
+          git push --quiet "$DEST" --all
+          git push --quiet "$DEST" --tags
+
+      - name: Slack alert on failure
+        if: failure()
+        env:
+          SLACK_ALERTS_WEBHOOK: ${{ secrets.SLACK_ALERTS_WEBHOOK }}
+        run: |
+          REPO="${GITHUB_REPOSITORY#*/}"
+          curl -s -X POST -H 'Content-Type: application/json' \
+            -d "{\"text\": \":floppy_disk: ${REPO} / mirror • :red_circle: Bitbucket mirror push failed — ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\"}" \
+            "$SLACK_ALERTS_WEBHOOK"
