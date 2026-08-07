@@ -13,6 +13,7 @@ permissions:
 
 env:
   BB_WORKSPACE: mjr-labs-mirror
+  BB_PROJECT: MIR
   ATLASSIAN_EMAIL: mjroberts55@gmail.com
 
 jobs:
@@ -38,25 +39,14 @@ jobs:
           STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
             -u "${ATLASSIAN_EMAIL}:${BITBUCKET_MIRROR_TOKEN}" "$API")
           if [ "$STATUS" = "404" ]; then
-            # Repo creation must land in a project. Try to discover one (the
-            # token may lack project read scope — log, don't trust, the reply),
-            # else create with no key and let Bitbucket use the default project.
-            PSTAT=$(curl -s -o /tmp/projects.json -w '%{http_code}' \
-              -u "${ATLASSIAN_EMAIL}:${BITBUCKET_MIRROR_TOKEN}" \
-              "https://api.bitbucket.org/2.0/workspaces/${BB_WORKSPACE}/projects")
-            PROJECT=$(jq -r '.values[0].key // empty' /tmp/projects.json 2>/dev/null || true)
-            if [ -n "$PROJECT" ]; then
-              BODY="{\"scm\": \"git\", \"is_private\": true, \"project\": {\"key\": \"${PROJECT}\"}}"
-              echo "Creating ${BB_WORKSPACE}/${BB_SLUG} in project ${PROJECT}"
-            else
-              echo "Projects list HTTP ${PSTAT}: $(cat /tmp/projects.json)"
-              BODY='{"scm": "git", "is_private": true}'
-              echo "Creating ${BB_WORKSPACE}/${BB_SLUG} in the default project"
-            fi
+            # Repo creation targets the MIR project explicitly (the token lacks
+            # project read scope, so discovery 403s; MIR is the owner's private
+            # project and the whole mirror estate lives in it).
+            echo "Creating ${BB_WORKSPACE}/${BB_SLUG} in project ${BB_PROJECT}"
             CREATE=$(curl -s -o /tmp/create.json -w '%{http_code}' -X POST \
               -u "${ATLASSIAN_EMAIL}:${BITBUCKET_MIRROR_TOKEN}" \
               -H "Content-Type: application/json" \
-              -d "$BODY" "$API")
+              -d "{\"scm\": \"git\", \"is_private\": true, \"project\": {\"key\": \"${BB_PROJECT}\"}}" "$API")
             case "$CREATE" in
               200|201) ;;
               *) echo "Repo creation failed (HTTP $CREATE):"; cat /tmp/create.json; exit 1 ;;
