@@ -64,13 +64,14 @@ jobs:
           git clone --bare --quiet \
             "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" repo.git
 
-      - name: Push all branches and tags (non-force)
+      - name: Push all branches and tags (non-force, force dependabot refs)
         env:
           BITBUCKET_MIRROR_TOKEN: ${{ secrets.BITBUCKET_MIRROR_TOKEN }}
         run: |
           set -eu
           cd repo.git
           DEST="https://x-bitbucket-api-token-auth:${BITBUCKET_MIRROR_TOKEN}@bitbucket.org/${BB_WORKSPACE}/${BB_SLUG}.git"
+          git push --quiet --force "$DEST" 'refs/heads/dependabot/*'
           git push --quiet "$DEST" --all
           git push --quiet "$DEST" --tags
 
