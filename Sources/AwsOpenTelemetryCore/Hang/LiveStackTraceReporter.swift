@@ -60,7 +60,7 @@ public protocol LiveStackTraceReporter {
       do {
         let crashReport = try PLCrashReport(data: rawStackTrace)
         if let fullStacktrace = PLCrashReportTextFormatter.stringValue(for: crashReport, with: PLCrashReportTextFormatiOS) {
-          stacktrace = String(fullStacktrace.prefix(maxStackTraceLength))
+          stacktrace = Self.truncatePreservingAppImage(fullStacktrace, limit: maxStackTraceLength)
           let firstFrame = getFirstFrameOfMain(stacktrace: stacktrace) ?? "unknown location"
           message = "Hang detected at \(firstFrame)"
         } else {
@@ -71,6 +71,49 @@ public protocol LiveStackTraceReporter {
         stacktrace = "Failed to parse stack trace: \(error)"
       }
       return StackTrace(message: message, stacktrace: stacktrace)
+    }
+
+
+    /// REC-327: truncate WITHOUT throwing away the app's own `Binary Images`
+    /// entry — the only line that makes a symbolication provable.
+    ///
+    /// The report is `header + threads… + "Binary Images:" + one line per
+    /// loaded image`. A plain `prefix(limit)` takes the head, so the image list
+    /// — which lives at the very end — is always the first thing lost. Measured
+    /// on live prod hang spans (2026-08-08): EVERY report is exactly 10,000
+    /// chars, cut mid-frame around thread 12, and NOT ONE contains a
+    /// `Binary Images` section. So no hang this estate has ever collected can
+    /// be proven to match the build that produced it; two investigations
+    /// (REC-263, REC-298) shipped that caveat independently.
+    ///
+    /// ⚠️ The fix is NOT simply a bigger limit, and the measurement is why. The
+    /// image list is 200-400 lines of ~120 chars — tens of KB — to obtain ONE
+    /// line of value: the app's own UUID. Raising the cap to fit it all would
+    /// multiply every hang payload several-fold for that single datum, and the
+    /// system images are already symbolicated by anyone who needs them.
+    /// So: keep the head as before, and splice back only the app's own entry.
+    ///
+    /// The app's line is identified by the `+` marker PLCrashReporter puts on
+    /// the main executable, which is exactly the "which binary is THIS build"
+    /// question. If no such line is found the result is the plain prefix —
+    /// unchanged behaviour, never worse than before.
+    static func truncatePreservingAppImage(_ full: String, limit: Int) -> String {
+      guard full.count > limit else { return full }
+
+      let head = String(full.prefix(limit))
+      guard let imagesRange = full.range(of: "Binary Images:") else { return head }
+
+      // The main executable's line carries a "+" before the image name.
+      let appLine = full[imagesRange.upperBound...]
+        .split(separator: "\n", omittingEmptySubsequences: true)
+        .first { $0.contains(" +") }
+      guard let appLine else { return head }
+
+      let suffix = "\n\nBinary Images (app only — REC-327):\n" + appLine.trimmingCharacters(in: .whitespaces)
+      // Keep the TOTAL within the caller's budget: the spliced tail is the
+      // point of the exercise, so the head yields the room for it.
+      let room = max(0, limit - suffix.count)
+      return String(full.prefix(room)) + suffix
     }
 
     // For simplicity, we only do library name + offset to help with grouping. If we include the full first frame, then
