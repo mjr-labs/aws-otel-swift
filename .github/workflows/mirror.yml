@@ -6,7 +6,15 @@
 name: Mirror
 
 on:
+  # EST-48: gated to `main`, NOT every branch. A bare `push:` fired the mirror
+  # 433 times estate-wide in the first 11 days of August; each run bills a full
+  # Actions minute for ~25 seconds of work, ~14% of the org's included
+  # allowance. Coverage is unchanged — mirror-to-bitbucket.yml bare-clones and
+  # pushes `--all` + `--tags` every run, so ANY trigger mirrors the FULL
+  # current state. Branches and tags still reach Bitbucket, at the next `main`
+  # push rather than instantly; dispatch below to mirror everything on demand.
   push:
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
