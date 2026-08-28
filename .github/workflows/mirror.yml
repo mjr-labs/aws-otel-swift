@@ -22,7 +22,7 @@ permissions:
 env:
   BB_WORKSPACE: mjr-labs-mirror
   BB_PROJECT: MIR
-  ATLASSIAN_EMAIL: mjroberts55@gmail.com
+  ATLASSIAN_EMAIL: michael@reconcily.uk
 
 jobs:
   mirror:
