@@ -22,7 +22,7 @@ permissions:
 env:
   BB_WORKSPACE: mjr-labs-mirror
   BB_PROJECT: MIR
-  ATLASSIAN_EMAIL: michael@reconcily.uk
+  ATLASSIAN_EMAIL: ${{ secrets.ATLASSIAN_EMAIL }}
 
 jobs:
   mirror:
@@ -33,6 +33,21 @@ jobs:
       group: mirror-${{ github.repository }}
       cancel-in-progress: false
     steps:
+      # EST-89: the email is the USERNAME half of the Bitbucket credential
+      # (`-u email:token`) and now comes from the org secret, so both halves
+      # live in one place and rotate together. An unset secret expands to an
+      # empty string, and `-u :token` 401s on every REST call while `git push`
+      # — which authenticates with the literal `x-bitbucket-api-token-auth` —
+      # keeps working. That half-working mirror is the failure this workflow
+      # exists to prevent, so fail before it can happen.
+      - name: Assert the mirror identity is set
+        run: |
+          set -eu
+          [ -n "${ATLASSIAN_EMAIL:-}" ] || {
+            echo "::error::ATLASSIAN_EMAIL is empty — set the mjr-labs org secret (visibility: all)."
+            exit 1
+          }
+
       - name: Resolve mirror slug
         run: |
           SLUG="${GITHUB_REPOSITORY#*/}"
