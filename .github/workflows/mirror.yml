@@ -1,7 +1,18 @@
 # Break-glass mirror to Bitbucket (EST-38) — INLINED copy of
 # mjr-labs/.github mirror-to-bitbucket.yml: this repo is PUBLIC (fork of the
 # public upstream), and public repos cannot call reusable workflows in a
-# private repo. Keep in sync with the canonical copy on any change.
+# private repo.
+#
+# EST-123: everything from `permissions:` down is the SHARED REGION and must
+# match the canonical copy byte for byte, comments included — the only exempt
+# step is `Resolve mirror slug`, which the canonical parameterises and this copy
+# cannot. `mjr-labs/.github` enforces that with `mirror-drift-check.yml`; it
+# FAILS on any difference. The previous version of this comment asked a human to
+# "keep in sync with the canonical copy on any change" and was disregarded
+# twice: EST-89 found the identity literal still here, and EST-123 found this
+# file still alerting to `secrets.SLACK_ALERTS_WEBHOOK` — which does not exist
+# on this org, so it expanded to the empty string and paged nobody, months after
+# EST-76 moved the canonical alert to Pushover.
 
 name: Mirror
 
@@ -98,12 +109,33 @@ jobs:
           git push --quiet "$DEST" --all
           git push --quiet "$DEST" --tags
 
-      - name: Slack alert on failure
+      # EST-76: Pushover, not Slack — the workspace is being cancelled and
+      # this step was the ONLY surface a mirror failure ever had. It never
+      # opened a JSM alert, so on cancellation it would have gone silent
+      # for every repo at once, which is the failure this whole piece of
+      # work exists to prevent.
+      #
+      # ⚠️ This stays a raw curl rather than going through the estate's
+      # canonical sender (finance_core.alerts). Not an oversight: this
+      # workflow checks out a BARE MIRROR (`repo.git`) and has no vendored
+      # copy to import, and the caller's checkout is not available to a
+      # reusable workflow. Swapping the destination keeps the number of
+      # hand-rolled senders where it was; importing would mean checking out
+      # a second repo on every mirror run of every repo in the org.
+      #
+      # priority 1 = the `failure` tier in that sender's map. Kept in step
+      # with it by hand, which is the cost of the paragraph above.
+      - name: Alert on failure
         if: failure()
         env:
-          SLACK_ALERTS_WEBHOOK: ${{ secrets.SLACK_ALERTS_WEBHOOK }}
+          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
         run: |
           REPO="${GITHUB_REPOSITORY#*/}"
-          curl -s -X POST -H 'Content-Type: application/json' \
-            -d "{\"text\": \":floppy_disk: ${REPO} / mirror • :red_circle: Bitbucket mirror push failed — ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\"}" \
-            "$SLACK_ALERTS_WEBHOOK"
+          curl -s --form-string "token=${PUSHOVER_TOKEN}" \
+            --form-string "user=${PUSHOVER_USER_KEY}" \
+            --form-string "title=${REPO} / mirror" \
+            --form-string "message=💾 Bitbucket mirror push failed
+          View run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --form-string "priority=1" \
+            https://api.pushover.net/1/messages.json
